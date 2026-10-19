@@ -13,6 +13,7 @@
 """
 
 from acps_sdk.amp.access_emitter import AccessEmitter
+from acps_sdk.amp.durable_access import DurableAccessEmitter, AccessLogIntegrityError
 from acps_sdk.amp.message_emitter import MessageEmitter
 from acps_sdk.amp.system_emitter import SystemEmitter
 from acps_sdk.amp.emitter import AuditEmitter
@@ -119,6 +120,8 @@ __all__ = [
     "compute_log_id_fallback",
     # 发射器
     "AccessEmitter",
+    "DurableAccessEmitter",
+    "AccessLogIntegrityError",
     "MessageEmitter",
     "SystemEmitter",
     "AuditEmitter",

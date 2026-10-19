@@ -12,6 +12,7 @@ from time import monotonic
 from typing import Any, Callable
 
 from .access_emitter import AccessEmitter
+from .durable_access import DurableAccessEmitter
 from .models import AccessBody, AccessParticipant, AccessRequest, AccessResponse, ErrorInfo
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,21 @@ class GroupAccessMiddleware:
         key = (getattr(command, "sessionId", None), getattr(command, "taskId", None), direction)
         if method != "start":
             return await callback()
-        if key in self._seen:
+        durable = isinstance(self.emitter, DurableAccessEmitter)
+        if key in self._seen and not durable:
             self._seen.move_to_end(key)
             return await callback()
+        intent = None
+        if durable:
+            mentions = getattr(command, "mentions", None)
+            callee = self.aic if direction == "receive" else (
+                mentions[0] if isinstance(mentions, list) and len(mentions) == 1 else "group:" + str(getattr(command, "groupId", "")))
+            intent = AccessBody(request=AccessRequest(method=method, route=self.route(command)),
+                caller=AccessParticipant(aic=getattr(command, "senderId", None)),
+                callee=AccessParticipant(aic=callee))
+            owned = self.emitter.begin_sync(key, intent, trace_id=key[0], correlation_id=key[1])
+            if not owned:
+                return await callback()
         # A handler failure is the first attempt's outcome. Redelivering its
         # same TaskId still invokes the handler but does not add another access.
         self._seen[key] = None
@@ -78,15 +91,19 @@ class GroupAccessMiddleware:
                 mentions[0] if isinstance(mentions, list) and len(mentions) == 1 else "group:" + str(getattr(command, "groupId", "")))
             body = AccessBody(
                 duration_ms=(monotonic() - start) * 1000,
-                request=AccessRequest(method=method, route=self.route(command)),
+                request=intent.request if intent is not None else AccessRequest(method=method, route=self.route(command)),
                 response=AccessResponse(status_code=500 if error else (202 if direction == "send" else 200)),
                 caller=AccessParticipant(aic=getattr(command, "senderId", None)),
                 callee=AccessParticipant(aic=callee),
                 error=ErrorInfo(code=error, message=error) if error else None,
             )
             try:
-                await self.emitter.emit(body, trace_id=getattr(command, "sessionId", None),
-                                        correlation_id=getattr(command, "taskId", None))
+                if durable:
+                    body.request, body.caller, body.callee = intent.request, intent.caller, intent.callee
+                    self.emitter.finish_sync(key, body)
+                else:
+                    await self.emitter.emit(body, trace_id=getattr(command, "sessionId", None),
+                                            correlation_id=getattr(command, "taskId", None))
             except Exception:
                 logger.warning("Group access emission failed", exc_info=True)
 
